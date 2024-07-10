@@ -98,7 +98,7 @@ npm --version
 
 2. 使用 PM2 启动服务器:
    ```
-   pm2 start app.js --name "whois-proxy"
+   pm2 start whois-proxy.js --name "whois-proxy"
    ```
 
 3. 查看运行状态:
