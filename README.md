@@ -129,8 +129,11 @@ npm --version
 ```
 http://x.x.x.x/whois/example.com
 ```
-
 其中x.x.x.x是你vps的ip。
+
+你也可以直接在浏览器中输入这一地址，返回结果就是whois查询结果。
+
+![image](https://github.com/ypq123456789/whois-proxy.js/assets/114487221/9fbe0270-a8c0-4081-a3e8-b37b6b540097)
 
 如果有需要，你也可以绑定自己的域名，并且套上CF的CDN，让自己的服务更加安全。
 
