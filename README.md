@@ -1,6 +1,10 @@
-# WHOIS 代理服务器
+## 项目描述
 
-这是一个简单的WHOIS代理服务器,使用Node.js和Express框架构建。它提供了一个API端点来查询域名的WHOIS信息,并包含缓存和速率限制功能。
+这是一个简单的 WHOIS 代理服务器,使用 Node.js 和 Express 框架构建。它提供了一个 API 端点来查询域名的 WHOIS 信息,并包含以下特性:
+
+- 使用 node-cache 实现数据缓存
+- 使用 express-rate-limit 实现请求速率限制
+- 提取并返回关键 WHOIS 信息（创建日期、过期日期、注册商）
 
 ## 前置要求
 
@@ -76,8 +80,15 @@ npm --version
 
 3. 安装依赖:
    ```
-   npm install
+   npm install express whois node-cache express-rate-limit
    ```
+
+这将安装以下包:
+- express: Web 应用框架
+- whois: WHOIS 查询功能
+- node-cache: 用于实现缓存
+- express-rate-limit: 用于实现速率限制
+
 
 ## 使用 PM2 运行服务器
 
