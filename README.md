@@ -72,12 +72,11 @@ node --version
 npm --version
 ```
 
-2. 克隆仓库:
+2. 下载并设置 whois-proxy.js:
    ```
-   git clone [您的仓库URL]
-   cd [仓库名称]
+   mkdir -p /root/whois && curl -o /root/whois/whois-proxy.js https://raw.githubusercontent.com/ypq123456789/whois-proxy.js/main/whois-proxy.js && cd /root/whois
    ```
-
+   
 3. 安装依赖:
    ```
    npm install express whois node-cache express-rate-limit
