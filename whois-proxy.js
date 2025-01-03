@@ -54,27 +54,22 @@ app.get('/whois/:domain', (req, res) => {
   });
 });
 
+function extractCreationDate(whoisData) {
+    const creationDateRegex = /(?:Creation|Registration) (?:Date|Time): (.+)/i;
+    const match = whoisData.match(creationDateRegex);
+    return match ? match[1] : "Unknown";
+}
+
 function extractExpirationDate(whoisData) {
-  const match = whoisData.match(/Expir(y|ation) Date: (.+)/i);
-  if (!match) {
-    console.warn('Could not extract expiration date from WHOIS data');
-  }
-  return match ? match[2].trim() : 'Unknown';
+    const expirationDateRegex = /(?:Expiration) (?:Date|Time): (.+)/i;
+    const match = whoisData.match(expirationDateRegex);
+    return match ? match[1] : "Unknown";
 }
 
 function extractRegistrar(whoisData) {
   const match = whoisData.match(/Registrar: (.+)/i);
   if (!match) {
     console.warn('Could not extract registrar from WHOIS data');
-  }
-  return match ? match[1].trim() : 'Unknown';
-}
-
-// 新增: 提取创建日期的函数
-function extractCreationDate(whoisData) {
-  const match = whoisData.match(/Creation Date: (.+)/i);
-  if (!match) {
-    console.warn('Could not extract creation date from WHOIS data');
   }
   return match ? match[1].trim() : 'Unknown';
 }
