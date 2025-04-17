@@ -3,7 +3,7 @@ const whois = require('whois');
 const rateLimit = require('express-rate-limit');
 const NodeCache = require('node-cache');
 const app = express();
-const port = 80;
+const port = 8080;
 
 // 创建缓存实例,默认缓存时间为1小时
 const cache = new NodeCache({ stdTTL: 3600 });
