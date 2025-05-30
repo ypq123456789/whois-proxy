@@ -1,5 +1,7 @@
 const express = require('express');
-const whois = require('whois'); // 请确保你已安装此模块，通常是 'node-whois'
+// 请在你的 package.json 中确认你使用的 'whois' 模块的具体名称和版本。
+// 大多数情况下，`npm install whois` 会安装 'node-whois' by Furqan Software (qruto)。
+const whois = require('whois');
 const rateLimit = require('express-rate-limit');
 const NodeCache = require('node-cache');
 const app = express();
@@ -34,10 +36,26 @@ app.get('/whois/:domain', (req, res) => {
   }
 
   console.log(`[${requestTime}] No cache for ${domain}, performing live lookup with timeout ${WHOIS_LOOKUP_TIMEOUT}ms.`);
-  whois.lookup(domain, { timeout: WHOIS_LOOKUP_TIMEOUT }, (err, data) => {
+
+  // 针对 .org 域名，尝试直接查询 'whois.pir.org' 并设置 follow: 0
+  // 这是为了解决特定域名 (如 heisi.org) 可能出现的超时问题。
+  // 你可以根据实际情况调整这些选项，或者针对不同的 TLD 设置不同的选项。
+  const whoisOptions = {
+    timeout: WHOIS_LOOKUP_TIMEOUT,
+    server: 'whois.pir.org', // 直接指定 .org 的权威 WHOIS 服务器
+    follow: 0                // 禁止进一步的查询引用 (因为 .org 是 Thick WHOIS)
+    // 备选尝试:
+    // server: 'whois.pir.org', follow: 1
+    // follow: 1 (不指定 server，让库自动判断但限制 follow 层级)
+    // (不传递 server 和 follow，使用库的默认行为，即我们之前的版本)
+  };
+
+  console.log(`[${requestTime}] Using WHOIS options for ${domain}: ${JSON.stringify(whoisOptions)}`);
+
+  whois.lookup(domain, whoisOptions, (err, data) => {
     const lookupEndTime = new Date().toISOString();
     if (err) {
-      console.error(`[${lookupEndTime}] WHOIS lookup for ${domain} FAILED. Error:`, err);
+      console.error(`[${lookupEndTime}] WHOIS lookup for ${domain} FAILED with options ${JSON.stringify(whoisOptions)}. Error:`, err);
       
       let errorDetails = 'WHOIS lookup failed';
       let statusCode = 500;
@@ -49,9 +67,8 @@ app.get('/whois/:domain', (req, res) => {
         errorDetails += ` (Code: ${err.code})`;
       }
       
-      // 检查是否是超时错误
       if (err.message && (err.message.toLowerCase().includes('timeout') || err.code === 'ETIMEDOUT')) {
-        errorDetails = `WHOIS lookup timed out after ${WHOIS_LOOKUP_TIMEOUT}ms: ${errorDetails}`;
+        errorDetails = `WHOIS lookup timed out after ${WHOIS_LOOKUP_TIMEOUT}ms using options ${JSON.stringify(whoisOptions)}: ${errorDetails}`;
         statusCode = 504; // Gateway Timeout
         console.error(`[${lookupEndTime}] Specific timeout error for ${domain}: ${errorDetails}`);
         return res.status(statusCode).json({ error: 'WHOIS lookup timed out from application', details: errorDetails });
@@ -61,8 +78,7 @@ app.get('/whois/:domain', (req, res) => {
       return res.status(statusCode).json({ error: 'WHOIS lookup failed', details: errorDetails });
     } else {
       console.log(`[${lookupEndTime}] WHOIS data received for ${domain}. Data length: ${data ? data.length : 'N/A'}`);
-      // console.log(`[${lookupEndTime}] Raw data sample for ${domain}: ${data ? data.substring(0, 200) : 'No data'}`); // 用于调试，可以取消注释查看原始数据片段
-
+      
       try {
         const creationDate = extractCreationDate(data);
         const expirationDate = extractExpirationDate(data);
@@ -75,10 +91,9 @@ app.get('/whois/:domain', (req, res) => {
           creationDate, 
           expirationDate, 
           registrar, 
-          rawData: data // 保留原始数据字段，与你之前的脚本一致
+          rawData: data
         };
         
-        // 将结果存入缓存
         cache.set(domain, result);
         console.log(`[${lookupEndTime}] Data for ${domain} stored in cache.`);
         
@@ -94,7 +109,6 @@ app.get('/whois/:domain', (req, res) => {
 
 function extractCreationDate(whoisData) {
   if (typeof whoisData !== 'string') return "Invalid data";
-  // 增强的正则表达式以匹配更多常见的创建日期标签
   const creationDateRegex = /(?:Creation Date|Registered on|Registration Date|Registration Time|Created On|create-date): (.+)/i;
   const match = whoisData.match(creationDateRegex);
   return match && match[1] ? match[1].trim() : "Unknown";
@@ -102,7 +116,6 @@ function extractCreationDate(whoisData) {
 
 function extractExpirationDate(whoisData) {
   if (typeof whoisData !== 'string') return "Invalid data";
-  // 增强的正则表达式以匹配 ".org" 等域名可能使用的 "Registry Expiry Date" 及其他常见标签
   const expirationDateRegex = /(?:Registry Expiry Date|Expiration Date|Expiry Date|Registrar Registration Expiration Date|Expiration Time|paid-till|valid-until): (.+)/i;
   const match = whoisData.match(expirationDateRegex);
   return match && match[1] ? match[1].trim() : "Unknown";
@@ -112,23 +125,18 @@ function extractRegistrar(whoisData) {
   if (typeof whoisData !== 'string') return "Invalid data";
   let match;
 
-  // 尝试匹配 "Registrar:"
   const registrarRegex = /Registrar: (.+)/i;
   match = whoisData.match(registrarRegex);
   if (match && match[1]) return match[1].trim();
 
-  // 尝试匹配 "Sponsoring Registrar:"
   const sponsoringRegistrarRegex = /Sponsoring Registrar: (.+)/i;
   match = whoisData.match(sponsoringRegistrarRegex);
   if (match && match[1]) return match[1].trim();
   
-  // 尝试匹配 "Registrar Name:"
   const registrarNameRegex = /Registrar Name: (.+)/i;
   match = whoisData.match(registrarNameRegex);
   if (match && match[1]) return match[1].trim();
 
-  // 可以根据需要添加更多常见的注册商标注方式
-  // console.warn('Could not extract registrar using known patterns.'); // 如果需要，可以取消注释此警告
   return 'Unknown';
 }
 
