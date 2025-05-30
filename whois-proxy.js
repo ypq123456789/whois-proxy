@@ -1,7 +1,6 @@
 const express = require('express');
-// 请在你的 package.json 中确认你使用的 'whois' 模块的具体名称和版本。
-// 大多数情况下，`npm install whois` 会安装 'node-whois' by Furqan Software (qruto)。
-const whois = require('whois');
+const whois = require('whois'); // Node.js whois 库
+const { execFile } = require('child_process'); // 用于执行系统命令
 const rateLimit = require('express-rate-limit');
 const NodeCache = require('node-cache');
 const app = express();
@@ -10,7 +9,7 @@ const port = 8080;
 // 创建缓存实例, 默认缓存时间为1小时 (3600秒)
 const cache = new NodeCache({ stdTTL: 3600 });
 
-// WHOIS 查询的超时时间 (毫秒)
+// WHOIS 查询的超时时间 (毫秒) - 同时用于node-whois库和系统命令
 const WHOIS_LOOKUP_TIMEOUT = 20000; // 20秒
 
 // 创建速率限制器
@@ -22,6 +21,36 @@ const limiter = rateLimit({
 
 // 应用速率限制中间件到所有请求
 app.use(limiter);
+
+// 辅助函数：处理WHOIS数据并发送响应
+function processWhoisData(rawData, domainName, responseObj, requestTimestamp, source) {
+  const processingTime = new Date().toISOString();
+  console.log(`[${processingTime}] WHOIS data received for ${domainName} via ${source}. Data length: ${rawData ? rawData.length : 'N/A'}`);
+  
+  try {
+    const creationDate = extractCreationDate(rawData);
+    const expirationDate = extractExpirationDate(rawData);
+    const registrar = extractRegistrar(rawData);
+    
+    console.log(`[${processingTime}] Extracted info for ${domainName} via ${source}: Creation: ${creationDate}, Expiration: ${expirationDate}, Registrar: ${registrar}`);
+    
+    const result = { 
+      domain: domainName, 
+      creationDate, 
+      expirationDate, 
+      registrar, 
+      rawData // 保留原始数据
+    };
+    
+    cache.set(domainName, result);
+    console.log(`[${processingTime}] Data for ${domainName} (from ${source}) stored in cache.`);
+    responseObj.json(result);
+  } catch (processingError) {
+    console.error(`[${processingTime}] Error processing WHOIS data for ${domainName} (from ${source}):`, processingError);
+    responseObj.status(500).json({ error: 'Error processing WHOIS data', details: processingError.message });
+  }
+}
+
 
 app.get('/whois/:domain', (req, res) => {
   const domain = req.params.domain;
@@ -35,74 +64,57 @@ app.get('/whois/:domain', (req, res) => {
     return res.json(cachedData);
   }
 
-  console.log(`[${requestTime}] No cache for ${domain}, performing live lookup with timeout ${WHOIS_LOOKUP_TIMEOUT}ms.`);
+  console.log(`[${requestTime}] No cache for ${domain}. Attempting lookup via node-whois library with timeout ${WHOIS_LOOKUP_TIMEOUT}ms.`);
 
-  // 针对 .org 域名，尝试直接查询 'whois.pir.org' 并设置 follow: 0
-  // 这是为了解决特定域名 (如 heisi.org) 可能出现的超时问题。
-  // 你可以根据实际情况调整这些选项，或者针对不同的 TLD 设置不同的选项。
-  const whoisOptions = {
-    timeout: WHOIS_LOOKUP_TIMEOUT,
-    server: 'whois.pir.org', // 直接指定 .org 的权威 WHOIS 服务器
-    follow: 0                // 禁止进一步的查询引用 (因为 .org 是 Thick WHOIS)
-    // 备选尝试:
-    // server: 'whois.pir.org', follow: 1
-    // follow: 1 (不指定 server，让库自动判断但限制 follow 层级)
-    // (不传递 server 和 follow，使用库的默认行为，即我们之前的版本)
-  };
-
-  console.log(`[${requestTime}] Using WHOIS options for ${domain}: ${JSON.stringify(whoisOptions)}`);
-
-  whois.lookup(domain, whoisOptions, (err, data) => {
-    const lookupEndTime = new Date().toISOString();
+  // 步骤1: 尝试使用 Node.js whois 库
+  whois.lookup(domain, { timeout: WHOIS_LOOKUP_TIMEOUT }, (err, data) => {
+    const nodeWhoisLookupTime = new Date().toISOString();
     if (err) {
-      console.error(`[${lookupEndTime}] WHOIS lookup for ${domain} FAILED with options ${JSON.stringify(whoisOptions)}. Error:`, err);
-      
-      let errorDetails = 'WHOIS lookup failed';
-      let statusCode = 500;
+      let nodeWhoisErrorDetails = err.message || 'Unknown error during node-whois lookup';
+      if (err.code) nodeWhoisErrorDetails += ` (Code: ${err.code})`;
+      console.warn(`[${nodeWhoisLookupTime}] node-whois lookup for ${domain} FAILED. Error: ${nodeWhoisErrorDetails}. Attempting fallback to system WHOIS command.`);
 
-      if (err.message) {
-        errorDetails = err.message;
-      }
-      if (err.code) {
-        errorDetails += ` (Code: ${err.code})`;
-      }
-      
       if (err.message && (err.message.toLowerCase().includes('timeout') || err.code === 'ETIMEDOUT')) {
-        errorDetails = `WHOIS lookup timed out after ${WHOIS_LOOKUP_TIMEOUT}ms using options ${JSON.stringify(whoisOptions)}: ${errorDetails}`;
-        statusCode = 504; // Gateway Timeout
-        console.error(`[${lookupEndTime}] Specific timeout error for ${domain}: ${errorDetails}`);
-        return res.status(statusCode).json({ error: 'WHOIS lookup timed out from application', details: errorDetails });
+        console.warn(`[${nodeWhoisLookupTime}] The failure in node-whois for ${domain} was specifically a timeout.`);
+      }
+
+      // 步骤2: node-whois 失败，尝试使用系统 whois 命令
+      // 简单的域名有效性检查，防止命令注入。注意：对于国际化域名(IDN)，这可能不够。
+      // 一个更安全的做法是确保域名参数只包含允许的字符。
+      if (!/^[a-zA-Z0-9.-]+$/.test(domain) || domain.includes(' ') || domain.length > 255) {
+        const invalidDomainTime = new Date().toISOString();
+        console.error(`[${invalidDomainTime}] Invalid domain format for system WHOIS: ${domain}`);
+        // 如果node-whois也失败了，这里返回一个综合的错误可能更好，
+        // 但由于这是在node-whois失败后的路径，先返回400表明域名问题。
+        return res.status(400).json({ error: 'Invalid domain format for system command' });
       }
       
-      console.error(`[${lookupEndTime}] Non-timeout error for ${domain}: ${errorDetails}`);
-      return res.status(statusCode).json({ error: 'WHOIS lookup failed', details: errorDetails });
+      console.log(`[${nodeWhoisLookupTime}] Executing system WHOIS command for ${domain} with timeout ${WHOIS_LOOKUP_TIMEOUT}ms.`);
+      execFile('whois', [domain], { timeout: WHOIS_LOOKUP_TIMEOUT }, (systemCmdError, stdout, stderr) => {
+        const systemWhoisLookupTime = new Date().toISOString();
+        if (systemCmdError) {
+          console.error(`[${systemWhoisLookupTime}] System WHOIS command for ${domain} FAILED. Error: ${systemCmdError.message}`);
+          if (stderr) {
+            console.error(`[${systemWhoisLookupTime}] System WHOIS stderr for ${domain}: ${stderr.trim()}`);
+          }
+          // node-whois 和系统命令都失败了
+          return res.status(500).json({ 
+            error: 'WHOIS lookup failed using both library and system command', 
+            library_error: nodeWhoisErrorDetails,
+            system_command_error: systemCmdError.message,
+            system_command_stderr: stderr ? stderr.trim() : null
+          });
+        }
+        
+        // 系统命令成功获取数据
+        console.log(`[${systemWhoisLookupTime}] System WHOIS lookup for ${domain} successful.`);
+        processWhoisData(stdout, domain, res, requestTime, "SystemCommand");
+      });
+
     } else {
-      console.log(`[${lookupEndTime}] WHOIS data received for ${domain}. Data length: ${data ? data.length : 'N/A'}`);
-      
-      try {
-        const creationDate = extractCreationDate(data);
-        const expirationDate = extractExpirationDate(data);
-        const registrar = extractRegistrar(data);
-        
-        console.log(`[${lookupEndTime}] Extracted info for ${domain}: Creation: ${creationDate}, Expiration: ${expirationDate}, Registrar: ${registrar}`);
-        
-        const result = { 
-          domain, 
-          creationDate, 
-          expirationDate, 
-          registrar, 
-          rawData: data
-        };
-        
-        cache.set(domain, result);
-        console.log(`[${lookupEndTime}] Data for ${domain} stored in cache.`);
-        
-        res.json(result);
-      } catch (processingError) {
-        const processingErrorTime = new Date().toISOString();
-        console.error(`[${processingErrorTime}] Error processing WHOIS data for ${domain}:`, processingError);
-        res.status(500).json({ error: 'Error processing WHOIS data', details: processingError.message });
-      }
+      // Node.js whois 库成功获取数据
+      console.log(`[${nodeWhoisLookupTime}] node-whois lookup for ${domain} successful.`);
+      processWhoisData(data, domain, res, requestTime, "NodeWhoisLib");
     }
   });
 });
